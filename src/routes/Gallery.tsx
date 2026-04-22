@@ -45,7 +45,7 @@ export default function Gallery() {
       </aside>
       <div className="flex-1 flex flex-col">
         <div className="border-b border-border p-4 space-y-4">
-          <GenerateForm onSubmitted={() => refetch()} />
+          <GenerateForm folderId={filters.folderId} onSubmitted={() => refetch()} />
           <FilterBar value={filters} onChange={setFilters} />
         </div>
         <div className="flex-1 overflow-y-auto p-4">

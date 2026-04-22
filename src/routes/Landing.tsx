@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
+import PigmintLogo from "@/components/PigmintLogo";
 
 export default function Landing() {
   return (
     <div className="relative min-h-screen flex flex-col items-center justify-center p-8 text-center">
       <div className="max-w-xl space-y-6">
-        <h1 className="text-5xl font-bold tracking-tight">
-          pig<span className="text-primary">mint</span>
+        <h1>
+          <PigmintLogo size="lg" className="justify-center" />
         </h1>
         <p className="text-muted-foreground text-lg">
           Generate images and videos. Organize everything in one place.

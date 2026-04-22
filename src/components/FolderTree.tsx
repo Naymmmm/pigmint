@@ -19,13 +19,22 @@ export default function FolderTree({
 
   const create = useMutation({
     mutationFn: (n: string) =>
-      apiFetch<{ id: string }>("/folders", {
+      apiFetch<{ folder: Folder }>("/folders", {
         method: "POST",
         body: JSON.stringify({ name: n }),
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setName("");
       setCreating(false);
+      qc.setQueryData<{ items: Folder[] }>(["folders"], (current) => {
+        const items = current?.items ?? [];
+        const next = [
+          ...items.filter((folder) => folder.id !== data.folder.id),
+          data.folder,
+        ].sort((a, b) => a.name.localeCompare(b.name));
+        return { items: next };
+      });
+      onSelect(data.folder.id);
       qc.invalidateQueries({ queryKey: ["folders"] });
     },
   });

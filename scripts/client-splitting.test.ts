@@ -33,7 +33,8 @@ test("model catalog and thumbnails are public API routes", () => {
 
   assert.match(workerIndex, /api\.route\("\/models", modelsRoutes\)/);
   assert.doesNotMatch(workerIndex, /authed\.route\("\/models", modelsRoutes\)/);
-  assert.match(modelsRoute, /modelsRoutes\.get\("\/:key\/thumb"/);
-  assert.match(combobox, /thumbnailUrl/);
+  assert.match(modelsRoute, /modelsRoutes\.get\("\/thumb"/);
+  assert.match(combobox, /hasThumbnail/);
   assert.match(combobox, /onError/);
+  assert.match(readFileSync("src/components/GenerateForm.tsx", "utf8"), /\/models\?limit=80/);
 });

@@ -14,13 +14,6 @@ export async function createSession(env: Env, data: SessionData): Promise<string
   await env.SESSIONS.put(`session:${token}`, JSON.stringify(data), {
     expirationTtl: SESSION_TTL_SECONDS,
   });
-  const indexKey = `user:${data.userId}:sessions`;
-  const existing = ((await env.SESSIONS.get(indexKey, { type: "json" })) ??
-    []) as string[];
-  existing.push(token);
-  await env.SESSIONS.put(indexKey, JSON.stringify(existing), {
-    expirationTtl: SESSION_TTL_SECONDS,
-  });
   return token;
 }
 

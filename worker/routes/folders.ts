@@ -23,12 +23,19 @@ foldersRoutes.post("/", async (c) => {
     .safeParse(await c.req.json());
   if (!body.success) return c.json({ error: "bad_request" }, 400);
   const folderId = id("fld");
+  const createdAt = now();
+  const folder = {
+    id: folderId,
+    name: body.data.name,
+    parent_id: body.data.parentId ?? null,
+    created_at: createdAt,
+  };
   await c.env.DB.prepare(
     "INSERT INTO folders (id, user_id, name, parent_id, created_at) VALUES (?, ?, ?, ?, ?)",
   )
-    .bind(folderId, userId, body.data.name, body.data.parentId ?? null, now())
+    .bind(folder.id, userId, folder.name, folder.parent_id, folder.created_at)
     .run();
-  return c.json({ id: folderId });
+  return c.json({ folder });
 });
 
 foldersRoutes.patch("/:id", async (c) => {

@@ -1,4 +1,3 @@
-import { fal } from "@fal-ai/client";
 import type { Env } from "../env";
 
 export interface FalSubmitInput {
@@ -11,17 +10,18 @@ export interface FalSubmitResult {
   requestId: string;
 }
 
-function configure(env: Env) {
-  fal.config({ credentials: env.FAL_KEY });
-}
-
 export async function submit(env: Env, args: FalSubmitInput): Promise<FalSubmitResult> {
-  configure(env);
-  const { request_id } = await fal.queue.submit(args.modelEndpoint, {
-    input: args.input,
-    webhookUrl: args.webhookUrl,
+  const res = await fetch(queueSubmitUrl(args.modelEndpoint, args.webhookUrl), {
+    method: "POST",
+    headers: falJsonHeaders(env),
+    body: JSON.stringify(args.input),
   });
-  return { requestId: request_id };
+  if (!res.ok) {
+    throw new Error(`fal queue submit failed: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { request_id?: string };
+  if (!body.request_id) throw new Error("fal queue submit missing request_id");
+  return { requestId: body.request_id };
 }
 
 export async function fetchResult(
@@ -29,8 +29,36 @@ export async function fetchResult(
   modelEndpoint: string,
   requestId: string,
 ): Promise<unknown> {
-  configure(env);
-  return fal.queue.result(modelEndpoint, { requestId });
+  const res = await fetch(queueResultUrl(modelEndpoint, requestId), {
+    method: "GET",
+    headers: falJsonHeaders(env),
+  });
+  if (!res.ok) {
+    throw new Error(`fal queue result failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export function queueSubmitUrl(modelEndpoint: string, webhookUrl: string): string {
+  const url = new URL(`https://queue.fal.run/${normalizeEndpoint(modelEndpoint)}`);
+  url.searchParams.set("fal_webhook", webhookUrl);
+  return url.toString();
+}
+
+export function queueResultUrl(modelEndpoint: string, requestId: string): string {
+  return `https://queue.fal.run/${normalizeEndpoint(modelEndpoint)}/requests/${encodeURIComponent(requestId)}`;
+}
+
+function normalizeEndpoint(modelEndpoint: string): string {
+  return modelEndpoint.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function falJsonHeaders(env: Env): HeadersInit {
+  return {
+    Authorization: `Key ${env.FAL_KEY}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
 }
 
 /**

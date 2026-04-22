@@ -1,6 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
 import { Images, Sparkles, CreditCard, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import PigmintLogo from "./PigmintLogo";
 
 const navItems = [
   { to: "/gallery", label: "Gallery", icon: Images },
@@ -12,8 +13,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <aside className="w-60 border-r border-border bg-card/40 p-4 flex flex-col gap-2">
-        <Link to="/gallery" className="font-semibold text-lg px-3 py-2">
-          pigmint
+        <Link to="/gallery" className="px-3 py-2">
+          <PigmintLogo />
         </Link>
         <nav className="flex flex-col gap-1 mt-2">
           {navItems.map(({ to, label, icon: Icon }) => (

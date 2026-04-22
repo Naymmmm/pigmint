@@ -1,4 +1,11 @@
 import catalog from "./catalog.generated.json" with { type: "json" };
+export {
+  ASSISTANT_COST_PER_MESSAGE,
+  DEFAULT_FREE_GRANT,
+  FREE_GENERATION_CREDIT_CAP,
+  PRO_MONTHLY_CREDITS,
+} from "./plans";
+import { FREE_GENERATION_CREDIT_CAP } from "./plans";
 
 export type GenType = "image" | "video";
 
@@ -98,12 +105,6 @@ export const MODELS: Record<string, ModelSpec> = Object.fromEntries(
     },
   ]),
 );
-
-// Plan + free-tier config.
-export const DEFAULT_FREE_GRANT = 5;
-export const FREE_GENERATION_CREDIT_CAP = 10;
-export const ASSISTANT_COST_PER_MESSAGE = 1;
-export const PRO_MONTHLY_CREDITS = 500;
 
 export function creditCost(modelKey: string): number {
   const m = MODELS[modelKey];

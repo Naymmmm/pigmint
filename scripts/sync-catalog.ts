@@ -228,6 +228,167 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Endpoint-prefix aliases — fal exposes some legacy paths alongside the
+// canonical one (e.g. fal-ai/flux-1/X aliases fal-ai/flux/X). Canonicalizing
+// here lets us collapse duplicate listings down to one entry.
+const ENDPOINT_ALIASES: Array<[RegExp, string]> = [
+  [/^fal-ai\/flux-1\//, "fal-ai/flux/"],
+];
+
+// Display names fal commonly reuses across many unrelated endpoints.
+// When we see these we always append a distinguishing suffix.
+const GENERIC_LABELS = new Set(
+  [
+    "bytedance",
+    "bitdance",
+    "fooocus",
+    "bagel",
+    "flux 2",
+    "flux 2 lora gallery",
+    "kling image",
+    "ernie image",
+    "hunyuan image",
+    "ideogram",
+    "bria",
+  ].map((s) => s.toLowerCase()),
+);
+
+const CATEGORY_ABBREV: Record<string, string> = {
+  "text-to-image": "t2i",
+  "image-to-image": "i2i",
+  "text-to-video": "t2v",
+  "image-to-video": "i2v",
+};
+
+function canonicalEndpoint(endpoint: string): string {
+  let s = endpoint;
+  for (const [rx, replacement] of ENDPOINT_ALIASES) s = s.replace(rx, replacement);
+  return s;
+}
+
+function prettifyToken(token: string): string {
+  if (CATEGORY_ABBREV[token]) return CATEGORY_ABBREV[token];
+  return token
+    .split("-")
+    .filter(Boolean)
+    .map((w) => (w.length <= 3 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join("-");
+}
+
+function displayNameTokens(displayName: string): Set<string> {
+  return new Set(
+    displayName
+      .toLowerCase()
+      .replace(/[[\](){}.·,:]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+}
+
+function suffixForEndpoint(
+  endpoint: string,
+  displayName: string,
+  category: string,
+  opts: { dropDnTokens: boolean } = { dropDnTokens: true },
+): string {
+  const stripped = endpoint
+    .replace(/^fal-ai\//, "")
+    .replace(/^bytedance\//, "")
+    .replace(/^rundiffusion-fal\//, "");
+  const pathSegments = stripped.split("/").filter(Boolean);
+  const dnTokens = displayNameTokens(displayName);
+
+  const distinguishing = pathSegments
+    .filter((token) => {
+      const norm = token.toLowerCase().replace(/[^a-z0-9.-]/g, "");
+      if (!norm) return false;
+      if (CATEGORY_ABBREV[norm]) return true;
+      if (!opts.dropDnTokens) return true;
+      if (dnTokens.has(norm)) return false;
+      const parts = norm.split("-").filter(Boolean);
+      if (parts.length > 1 && parts.every((p) => dnTokens.has(p))) return false;
+      return true;
+    })
+    .map(prettifyToken);
+
+  if (distinguishing.length > 0) return distinguishing.join(" ");
+  // Deepest fallback: explicit "base" for single-segment endpoints,
+  // otherwise the raw tail segment.
+  return pathSegments.length <= 1
+    ? "base"
+    : prettifyToken(pathSegments[pathSegments.length - 1]);
+}
+
+function deduplicateAndDisambiguate(
+  input: CatalogModel[],
+): { models: CatalogModel[]; collapsed: number; disambiguated: number } {
+  // --- 1. Collapse endpoint aliases ---------------------------------------
+  const byCanonical = new Map<string, CatalogModel[]>();
+  for (const model of input) {
+    const key = canonicalEndpoint(model.endpoint);
+    const bucket = byCanonical.get(key);
+    if (bucket) bucket.push(model);
+    else byCanonical.set(key, [model]);
+  }
+
+  let collapsed = 0;
+  const pickedModels: CatalogModel[] = [];
+  for (const bucket of byCanonical.values()) {
+    if (bucket.length === 1) {
+      pickedModels.push(bucket[0]);
+      continue;
+    }
+    // Prefer most-featured, then shortest endpoint path.
+    bucket.sort((a, b) => {
+      const featuredA = a.featuredRank ?? Number.POSITIVE_INFINITY;
+      const featuredB = b.featuredRank ?? Number.POSITIVE_INFINITY;
+      if (featuredA !== featuredB) return featuredA - featuredB;
+      return a.endpoint.length - b.endpoint.length;
+    });
+    pickedModels.push(bucket[0]);
+    collapsed += bucket.length - 1;
+  }
+
+  // --- 2. Disambiguate remaining label collisions / generic labels --------
+  // Remember the original displayName so pass 2 can rebuild the label from
+  // scratch if pass 1 didn't add enough entropy.
+  const originalName = new WeakMap<CatalogModel, string>();
+  for (const model of pickedModels) originalName.set(model, model.displayName);
+
+  const labelCount = new Map<string, number>();
+  for (const model of pickedModels) {
+    labelCount.set(model.displayName, (labelCount.get(model.displayName) ?? 0) + 1);
+  }
+
+  let disambiguated = 0;
+  // Pass 1: drop tokens that are redundant with the display name.
+  for (const model of pickedModels) {
+    const count = labelCount.get(model.displayName) ?? 1;
+    const generic = GENERIC_LABELS.has(model.displayName.toLowerCase().trim());
+    if (count <= 1 && !generic) continue;
+    const suffix = suffixForEndpoint(model.endpoint, model.displayName, model.category);
+    model.displayName = `${model.displayName} · ${suffix}`;
+    disambiguated++;
+  }
+
+  // Pass 2: any residual collisions (pass-1 suffixes weren't enough) get the
+  // full-path suffix without dn-redundancy filtering.
+  const secondCount = new Map<string, number>();
+  for (const model of pickedModels) {
+    secondCount.set(model.displayName, (secondCount.get(model.displayName) ?? 0) + 1);
+  }
+  for (const model of pickedModels) {
+    if ((secondCount.get(model.displayName) ?? 1) <= 1) continue;
+    const base = originalName.get(model) ?? model.displayName;
+    const suffix = suffixForEndpoint(model.endpoint, base, model.category, {
+      dropDnTokens: false,
+    });
+    model.displayName = `${base} · ${suffix}`;
+  }
+
+  return { models: pickedModels, collapsed, disambiguated };
+}
+
 function sortCatalogModels(models: CatalogModel[]): CatalogModel[] {
   const categoryRank = new Map([
     ["text-to-image", 0],
@@ -281,6 +442,11 @@ async function main() {
     }
   }
 
+  const dedup = deduplicateAndDisambiguate(models);
+  console.log(
+    `Collapsed ${dedup.collapsed} endpoint aliases, disambiguated ${dedup.disambiguated} labels`,
+  );
+
   const output = {
     generatedAt: new Date().toISOString(),
     usdPerCredit: USD_PER_CREDIT,
@@ -294,13 +460,13 @@ async function main() {
       pricingEndpoint: `${API}/v1/models/pricing`,
       categories: GENERATION_CATEGORIES,
     },
-    models: sortCatalogModels(models),
+    models: sortCatalogModels(dedup.models),
   };
 
   const path = resolve("worker/lib/catalog.generated.json");
   writeFileSync(path, JSON.stringify(output, null, 2));
 
-  console.log(`Wrote ${models.length} models to ${path}`);
+  console.log(`Wrote ${dedup.models.length} models to ${path}`);
   if (skipped.length) {
     console.warn(`Skipped ${skipped.length} models:`);
     for (const line of skipped) console.warn(`  ${line}`);

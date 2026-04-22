@@ -133,31 +133,45 @@ generationsRoutes.post("/", async (c) => {
     }
   }
 
-  const genId = id("gen");
+  // We submit N independent single-image jobs rather than one batched call.
+  // Rationale: most fal models still bill per output image regardless of
+  // batch param, but batching adds provider-side cost variance and ties the
+  // whole request's fate together. Independent submissions give the user
+  // graceful partial success + simpler refund on failure.
+  const perCallCost = generationCreditCost(body.data.model, 1);
   const createdAt = now();
 
-  // Debit atomically.
+  // Debit the total upfront, atomically.
   if (useFree) {
-    await c.env.DB.prepare(
-        "UPDATE users SET free_remaining = free_remaining - ? WHERE id = ? AND free_remaining >= ?",
+    const res = await c.env.DB.prepare(
+      "UPDATE users SET free_remaining = free_remaining - ? WHERE id = ? AND free_remaining >= ?",
     )
       .bind(numImages, userId, numImages)
       .run();
+    if ((res.meta.changes ?? 0) === 0) {
+      return c.json({ error: "insufficient_free_generations" }, 402);
+    }
   } else {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
-      ).bind(cost, userId, cost),
-      c.env.DB.prepare(
-        `INSERT INTO credit_ledger (id, user_id, delta, reason, created_at)
-         VALUES (?, ?, ?, 'generation', ?)`,
-      ).bind(id("led"), userId, -cost, createdAt),
-    ]);
+    const debit = await c.env.DB.prepare(
+      "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
+    )
+      .bind(cost, userId, cost)
+      .run();
+    if ((debit.meta.changes ?? 0) === 0) {
+      return c.json({ error: "insufficient_credits", required: cost }, 402);
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO credit_ledger (id, user_id, delta, reason, created_at)
+       VALUES (?, ?, ?, 'generation', ?)`,
+    )
+      .bind(id("led"), userId, -cost, createdAt)
+      .run();
   }
 
-  // Submit to fal.
-  const webhookUrl = `${c.env.APP_URL}/api/webhooks/fal?gen=${genId}`;
-  const falInput = fal.buildInput({
+  // Fan out: build one fal input (no num_images), submit N times in parallel,
+  // insert a row per submission. Per-submission failures refund that slot
+  // only; successful ones proceed.
+  const baseFalInput = fal.buildInput({
     prompt: body.data.prompt,
     negativePrompt: body.data.negativePrompt,
     aspectRatio: body.data.aspectRatio,
@@ -167,8 +181,8 @@ generationsRoutes.post("/", async (c) => {
     refImageParamKind: model.refImageParamKind,
     negativePromptParam: model.negativePromptParam,
     supportsSeed: model.supportsSeed,
-    numImages,
-    supportsNumImages: model.numImagesOptions.length > 0,
+    numImages: 1,
+    supportsNumImages: false, // force single-image per submission
     resolution,
     supportsResolution: model.resolutionOptions.length > 0,
     quality,
@@ -176,64 +190,107 @@ generationsRoutes.post("/", async (c) => {
     seed: body.data.seed,
   });
 
-  let submission: fal.FalSubmitResult;
-  try {
-    submission = await fal.submit(c.env, {
-      modelEndpoint: model.endpoint,
-      input: falInput,
-      webhookUrl,
-    });
-  } catch (e) {
-    // Refund.
+  const genIds = Array.from({ length: numImages }, () => id("gen"));
+  const refImageJson = JSON.stringify(body.data.refImageUrls ?? []);
+
+  const results = await Promise.all(
+    genIds.map(async (genId, index) => {
+      // If the user passed a seed, increment it per submission so each
+      // output is distinct. If no seed, fal will randomize anyway.
+      const seed =
+        body.data.seed != null ? body.data.seed + index : undefined;
+      const input = seed != null ? { ...baseFalInput, seed } : baseFalInput;
+      const webhookUrl = `${c.env.APP_URL}/api/webhooks/fal?gen=${genId}`;
+      try {
+        const submission = await fal.submit(c.env, {
+          modelEndpoint: model.endpoint,
+          input,
+          webhookUrl,
+        });
+        await c.env.DB.prepare(
+          `INSERT INTO generations
+             (id, user_id, folder_id, type, status, prompt, negative_prompt, model,
+              aspect_ratio, seed, ref_image_urls, credit_cost, fal_request_id, created_at)
+           VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+          .bind(
+            genId,
+            userId,
+            body.data.folderId ?? null,
+            model.type,
+            body.data.prompt,
+            body.data.negativePrompt ?? null,
+            body.data.model,
+            body.data.aspectRatio,
+            seed ?? null,
+            refImageJson,
+            useFree ? 0 : perCallCost,
+            submission.requestId,
+            createdAt,
+          )
+          .run();
+        return { ok: true as const, id: genId };
+      } catch (e) {
+        return { ok: false as const, id: genId, error: String(e) };
+      }
+    }),
+  );
+
+  const succeeded = results.filter((r) => r.ok) as Array<{ ok: true; id: string }>;
+  const failed = results.filter((r) => !r.ok) as Array<{
+    ok: false;
+    id: string;
+    error: string;
+  }>;
+
+  // Refund the failed slots only.
+  if (failed.length > 0) {
     if (useFree) {
       await c.env.DB.prepare(
         "UPDATE users SET free_remaining = free_remaining + ? WHERE id = ?",
       )
-        .bind(numImages, userId)
+        .bind(failed.length, userId)
         .run();
     } else {
+      const refundAmount = perCallCost * failed.length;
       await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(cost, userId),
+        c.env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(
+          refundAmount,
+          userId,
+        ),
         c.env.DB.prepare(
           `INSERT INTO credit_ledger (id, user_id, delta, reason, created_at)
            VALUES (?, ?, ?, 'refund', ?)`,
-        ).bind(id("led"), userId, cost, now()),
+        ).bind(id("led"), userId, refundAmount, now()),
       ]);
     }
-    return c.json({ error: "provider_submit_failed", detail: String(e) }, 502);
   }
 
-  await c.env.DB.prepare(
-    `INSERT INTO generations
-       (id, user_id, folder_id, type, status, prompt, negative_prompt, model,
-        aspect_ratio, seed, ref_image_urls, credit_cost, fal_request_id, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      genId,
-      userId,
-      body.data.folderId ?? null,
-      model.type,
-      body.data.prompt,
-      body.data.negativePrompt ?? null,
-      body.data.model,
-      body.data.aspectRatio,
-      body.data.seed ?? null,
-      JSON.stringify(body.data.refImageUrls ?? []),
-      useFree ? 0 : cost,
-      submission.requestId,
-      createdAt,
-    )
-    .run();
+  if (succeeded.length === 0) {
+    return c.json(
+      {
+        error: "provider_submit_failed",
+        detail: failed[0]?.error ?? "unknown",
+      },
+      502,
+    );
+  }
 
-  return c.json({ id: genId, status: "queued" });
+  return c.json({
+    ids: succeeded.map((s) => s.id),
+    submitted: succeeded.length,
+    failed: failed.length,
+    // Backwards-compat: some callers still read `.id`.
+    id: succeeded[0].id,
+    status: "queued",
+  });
 });
 
 const listSchema = z.object({
   type: z.enum(["image", "video"]).optional(),
   folderId: z.string().optional(),
   bookmarked: z.coerce.boolean().optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: z.coerce.number().int().min(1).max(100).default(24),
   cursor: z.coerce.number().int().optional(),
 });
 
@@ -380,14 +437,36 @@ generationsRoutes.delete("/:id", async (c) => {
 });
 
 // Upload a ref image (client PUTs directly here; stored in R2 under user's prefix).
+const MAX_REF_UPLOAD_BYTES = 8 * 1024 * 1024; // 8 MB
+const ALLOWED_REF_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
 generationsRoutes.post("/uploads", async (c) => {
   const userId = c.get("userId");
-  const contentType = c.req.header("Content-Type") ?? "application/octet-stream";
-  if (!contentType.startsWith("image/")) {
-    return c.json({ error: "not_an_image" }, 400);
+  const contentType = (c.req.header("Content-Type") ?? "").split(";")[0].trim();
+  if (!ALLOWED_REF_TYPES.has(contentType)) {
+    return c.json({ error: "unsupported_media_type" }, 415);
   }
+  const contentLength = Number(c.req.header("Content-Length") ?? "0");
+  if (!Number.isFinite(contentLength) || contentLength <= 0) {
+    return c.json({ error: "missing_content_length" }, 411);
+  }
+  if (contentLength > MAX_REF_UPLOAD_BYTES) {
+    return c.json({ error: "payload_too_large", maxBytes: MAX_REF_UPLOAD_BYTES }, 413);
+  }
+
+  // Buffer + re-check actual bytes to defend against a lying Content-Length.
+  const buf = await c.req.raw.arrayBuffer();
+  if (buf.byteLength > MAX_REF_UPLOAD_BYTES) {
+    return c.json({ error: "payload_too_large", maxBytes: MAX_REF_UPLOAD_BYTES }, 413);
+  }
+
   const key = `refs/${userId}/${id("ref")}`;
-  await c.env.BUCKET.put(key, c.req.raw.body, { httpMetadata: { contentType } });
+  await c.env.BUCKET.put(key, buf, { httpMetadata: { contentType } });
   return c.json({ key, url: await createSignedRefUrl(c.env, key) });
 });
 

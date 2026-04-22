@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Maximize2, ImageUp, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { CreditCard, ImageUp, Maximize2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import ModerationWarning from "./ModerationWarning";
 import PresetPicker from "./PresetPicker";
@@ -14,13 +15,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import ModelCombobox from "./ModelCombobox";
 
 interface ModelInfo {
   key: string;
   label: string;
-  description: string | null;
-  thumbnailUrl: string | null;
   type: "image" | "video";
   category?: string | null;
   credits: number;
@@ -36,6 +41,7 @@ interface ModelInfo {
   defaultQuality: string | null;
   isFeatured: boolean;
   featuredRank: number | null;
+  hasThumbnail: boolean;
 }
 
 interface BillingStatus {
@@ -48,10 +54,21 @@ interface Blocked {
   isChildSafety: boolean;
 }
 
-export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void }) {
+interface PaidRequired {
+  title: string;
+  message: string;
+}
+
+export default function GenerateForm({
+  folderId,
+  onSubmitted,
+}: {
+  folderId?: string;
+  onSubmitted: () => void;
+}) {
   const { data: catalog } = useQuery<{ items: ModelInfo[] }>({
     queryKey: ["models"],
-    queryFn: () => apiFetch("/models"),
+    queryFn: () => apiFetch("/models?limit=80"),
     staleTime: 5 * 60_000,
   });
   const models = catalog?.items ?? [];
@@ -63,6 +80,7 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
 
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("flux-schnell");
+  const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null);
   const [aspect, setAspect] = useState("1:1");
   const [numImages, setNumImages] = useState(1);
   const [resolution, setResolution] = useState("");
@@ -70,10 +88,13 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
   const [refs, setRefs] = useState<string[]>([]);
   const [presetKey, setPresetKey] = useState("none");
   const [blocked, setBlocked] = useState<Blocked | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [paidRequired, setPaidRequired] = useState<PaidRequired | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
   const activePreset = PRESETS.find((p) => p.key === presetKey);
-  const current = models.find((m) => m.key === model);
+  const current =
+    selectedModel?.key === model ? selectedModel : models.find((m) => m.key === model);
 
   useEffect(() => {
     if (!current) return;
@@ -99,7 +120,9 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
 
   const submit = useMutation({
     mutationFn: () =>
-      apiFetch<{ id: string }>("/generations", {
+      apiFetch<{ id: string; ids?: string[]; submitted?: number; failed?: number }>(
+        "/generations",
+        {
         method: "POST",
         body: JSON.stringify({
           prompt: applyPreset(prompt, activePreset),
@@ -107,14 +130,18 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
           model,
           aspectRatio: aspect,
           refImageUrls: refs,
+          folderId: folderId ?? null,
           numImages: current?.numImagesOptions.length ? numImages : undefined,
           resolution: current?.resolutionOptions.length ? resolution : undefined,
           quality: current?.qualityOptions.length ? quality : undefined,
         }),
-      }),
+      },
+      ),
     onSuccess: () => {
       setPrompt("");
       setBlocked(null);
+      setFormError(null);
+      setPaidRequired(null);
       onSubmitted();
     },
     onError: (err) => {
@@ -125,20 +152,31 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
           message?: string;
           categories?: string[];
           isChildSafety?: boolean;
+          required?: number;
         };
       };
       if (e.body?.error === "moderation_blocked") {
+        setFormError(null);
+        setPaidRequired(null);
         setBlocked({
           message: e.body.message ?? "This prompt was flagged.",
           categories: e.body.categories ?? [],
           isChildSafety: !!e.body.isChildSafety,
         });
+      } else if (isPaidRequiredError(e.body?.error)) {
+        setBlocked(null);
+        setFormError(null);
+        setPaidRequired(
+          paidRequiredFromError(
+            e.body?.error,
+            e.body?.required ?? totalCredits,
+            freeCreditCap,
+          ),
+        );
       } else {
-        setBlocked({
-          message: e.body?.message ?? e.body?.error ?? "Something went wrong.",
-          categories: [],
-          isChildSafety: false,
-        });
+        setBlocked(null);
+        setPaidRequired(null);
+        setFormError(e.body?.message ?? e.body?.error ?? "Something went wrong.");
       }
     },
   });
@@ -148,11 +186,34 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
   const freeCreditCap = 10;
   const freeLocked =
     isFreePlan && (!!current && (current.type === "video" || totalCredits > freeCreditCap));
-  const canSubmit =
+  const formReady =
     !!prompt.trim() &&
     !submit.isPending &&
-    !freeLocked &&
     (!current?.requiresRefImage || refs.length > 0);
+  function openPaidRequired() {
+    setBlocked(null);
+    setFormError(null);
+    setPaidRequired(
+      current?.type === "video"
+        ? {
+            title: "Paid plan required",
+            message: "Video models require a paid plan.",
+          }
+        : {
+            title: "Paid plan required",
+            message: `Free generations are limited to ${freeCreditCap} credits or below. This setup needs ${totalCredits} credits.`,
+          },
+    );
+  }
+
+  function handleSubmit() {
+    if (!formReady) return;
+    if (freeLocked) {
+      openPaidRequired();
+      return;
+    }
+    submit.mutate();
+  }
 
   async function uploadRef(file: File) {
     const res = await fetch("/api/generations/uploads", {
@@ -193,7 +254,10 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
           <ModelCombobox
             models={models}
             value={model}
-            onChange={setModel}
+            onChange={(next) => {
+              setModel(next.key);
+              setSelectedModel(next);
+            }}
             isFreePlan={isFreePlan}
             freeCreditCap={freeCreditCap}
           />
@@ -314,8 +378,8 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.97 }}
-          disabled={!canSubmit}
-          onClick={() => submit.mutate()}
+          disabled={!formReady}
+          onClick={handleSubmit}
           className="ml-auto h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submit.isPending
@@ -329,6 +393,12 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
       {freeLocked && (
         <p className="text-xs text-muted-foreground">
           Free generations are limited to image models at {freeCreditCap} credits or below.
+        </p>
+      )}
+
+      {formError && (
+        <p role="alert" className="text-xs text-destructive">
+          {formError}
         </p>
       )}
 
@@ -353,7 +423,75 @@ export default function GenerateForm({ onSubmitted }: { onSubmitted: () => void 
         onPresetKeyChange={setPresetKey}
         modelType={current?.type}
       />
+
+      <BillingRequiredDialog
+        paidRequired={paidRequired}
+        onOpenChange={(open) => !open && setPaidRequired(null)}
+      />
     </div>
+  );
+}
+
+function isPaidRequiredError(error?: string) {
+  return (
+    error === "free_generation_credit_cap" ||
+    error === "video_requires_paid_plan" ||
+    error === "insufficient_credits" ||
+    error === "paid_plan_required"
+  );
+}
+
+function paidRequiredFromError(
+  error: string | undefined,
+  requiredCredits: number,
+  freeCreditCap: number,
+): PaidRequired {
+  if (error === "insufficient_credits") {
+    return {
+      title: "More credits required",
+      message: `This generation needs ${requiredCredits} credits. Add credits to continue.`,
+    };
+  }
+  if (error === "video_requires_paid_plan" || error === "paid_plan_required") {
+    return {
+      title: "Paid plan required",
+      message: "This model requires a paid plan.",
+    };
+  }
+  return {
+    title: "Paid plan required",
+    message: `Free generations are limited to ${freeCreditCap} credits or below. This setup needs ${requiredCredits} credits.`,
+  };
+}
+
+function BillingRequiredDialog({
+  paidRequired,
+  onOpenChange,
+}: {
+  paidRequired: PaidRequired | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open={!!paidRequired} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <CreditCard size={18} />
+        </div>
+        <div className="space-y-2">
+          <DialogTitle>{paidRequired?.title ?? "Paid plan required"}</DialogTitle>
+          <DialogDescription>
+            {paidRequired?.message ?? "Upgrade or add credits to continue."}
+          </DialogDescription>
+        </div>
+        <Link
+          to="/settings/billing"
+          onClick={() => onOpenChange(false)}
+          className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          Open billing
+        </Link>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -223,12 +223,7 @@ async function logEvent(
 }
 
 async function invalidateSessions(env: Env, userId: string) {
-  // Session cookie value is keyed in KV by session token. We store a reverse
-  // index under `user:<id>:sessions` listing active tokens.
-  const indexKey = `user:${userId}:sessions`;
-  const tokens = await env.SESSIONS.get(indexKey, { type: "json" });
-  if (Array.isArray(tokens)) {
-    await Promise.all(tokens.map((t) => env.SESSIONS.delete(`session:${t}`)));
-  }
-  await env.SESSIONS.delete(indexKey);
+  // New requests are blocked by the suspended user status in requireUser.
+  // Delete the legacy reverse index if it exists from older sessions.
+  await env.SESSIONS.delete(`user:${userId}:sessions`);
 }

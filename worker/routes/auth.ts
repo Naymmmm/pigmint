@@ -1,23 +1,17 @@
 import { Hono } from "hono";
-import { WorkOS } from "@workos-inc/node";
 import type { Env, AppVariables } from "../env";
 import { createSession, sessionCookie, clearCookie } from "../auth/session";
+import { authenticateWorkosCode, workosAuthorizationUrl } from "../auth/workos";
 import { id, now } from "../lib/ids";
-import { DEFAULT_FREE_GRANT } from "../lib/pricing";
+import { DEFAULT_FREE_GRANT } from "../lib/plans";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 
 export const authRoutes = new Hono<AppEnv>();
 
-function workos(env: Env) {
-  return new WorkOS(env.WORKOS_API_KEY, { clientId: env.WORKOS_CLIENT_ID });
-}
-
 // Kicks off AuthKit hosted login.
 authRoutes.get("/login", (c) => {
-  const w = workos(c.env);
-  const url = w.userManagement.getAuthorizationUrl({
-    provider: "authkit",
+  const url = workosAuthorizationUrl({
     clientId: c.env.WORKOS_CLIENT_ID,
     redirectUri: `${c.env.APP_URL}/api/auth/callback`,
   });
@@ -30,11 +24,11 @@ authRoutes.get("/callback", async (c) => {
 
   let user: { id: string; email: string };
   try {
-    const result = await workos(c.env).userManagement.authenticateWithCode({
+    user = await authenticateWorkosCode({
+      apiKey: c.env.WORKOS_API_KEY,
       clientId: c.env.WORKOS_CLIENT_ID,
       code,
     });
-    user = { id: result.user.id, email: result.user.email };
   } catch (err) {
     return c.json({ error: "workos_exchange_failed", detail: String(err) }, 401);
   }

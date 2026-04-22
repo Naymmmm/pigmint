@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Check, Image as ImageIcon, Lock, Video, Star } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -11,12 +12,11 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export interface ModelInfo {
   key: string;
   label: string;
-  description: string | null;
-  thumbnailUrl: string | null;
   type: "image" | "video";
   category?: string | null;
   credits: number;
@@ -24,8 +24,15 @@ export interface ModelInfo {
   defaultAspect: string;
   supportsRefImages: boolean;
   requiresRefImage: boolean;
+  numImagesOptions: number[];
+  defaultNumImages: number | null;
+  resolutionOptions: string[];
+  defaultResolution: string | null;
+  qualityOptions: string[];
+  defaultQuality: string | null;
   isFeatured: boolean;
   featuredRank: number | null;
+  hasThumbnail: boolean;
 }
 
 export default function ModelCombobox({
@@ -37,20 +44,71 @@ export default function ModelCombobox({
 }: {
   models: ModelInfo[];
   value: string;
-  onChange: (key: string) => void;
+  onChange: (model: ModelInfo) => void;
   isFreePlan?: boolean;
   freeCreditCap?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const current = models.find((m) => m.key === value);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
+  const searchEnabled = open && deferredSearch.length > 0;
+  const { data: searchCatalog } = useQuery<{ items: ModelInfo[] }>({
+    queryKey: ["models-search", deferredSearch],
+    queryFn: () =>
+      apiFetch(`/models/search?q=${encodeURIComponent(deferredSearch)}&limit=80`),
+    enabled: searchEnabled,
+    staleTime: 5 * 60_000,
+  });
 
-  const featured = models
-    .filter((m) => m.isFeatured)
-    .sort((a, b) => (a.featuredRank ?? 9999) - (b.featuredRank ?? 9999))
-    .slice(0, 12);
-  const featuredKeys = new Set(featured.map((m) => m.key));
-  const images = models.filter((m) => m.type === "image" && !featuredKeys.has(m.key));
-  const videos = models.filter((m) => m.type === "video" && !featuredKeys.has(m.key));
+  // Remember every model we've seen — from the default list, from search
+  // results, and whatever the user picks. This lets us resolve `current`
+  // even when a model was picked via search and then the popover closed
+  // (the default `models` list likely doesn't include it).
+  const [knownByKey, setKnownByKey] = useState<Map<string, ModelInfo>>(() => new Map());
+
+  useEffect(() => {
+    if (models.length === 0) return;
+    setKnownByKey((prev) => {
+      const next = new Map(prev);
+      for (const m of models) next.set(m.key, m);
+      return next;
+    });
+  }, [models]);
+
+  useEffect(() => {
+    const items = searchCatalog?.items;
+    if (!items || items.length === 0) return;
+    setKnownByKey((prev) => {
+      const next = new Map(prev);
+      for (const m of items) next.set(m.key, m);
+      return next;
+    });
+  }, [searchCatalog]);
+
+  function rememberPicked(m: ModelInfo) {
+    setKnownByKey((prev) => {
+      if (prev.has(m.key)) return prev;
+      const next = new Map(prev);
+      next.set(m.key, m);
+      return next;
+    });
+  }
+
+  const visibleModels = searchEnabled ? searchCatalog?.items ?? [] : models;
+  const current = knownByKey.get(value);
+
+  const { featured, images, videos } = useMemo(() => {
+    const featuredModels = visibleModels
+      .filter((m) => m.isFeatured)
+      .sort((a, b) => (a.featuredRank ?? 9999) - (b.featuredRank ?? 9999))
+      .slice(0, 12);
+    const featuredKeys = new Set(featuredModels.map((m) => m.key));
+    return {
+      featured: featuredModels,
+      images: visibleModels.filter((m) => m.type === "image" && !featuredKeys.has(m.key)),
+      videos: visibleModels.filter((m) => m.type === "video" && !featuredKeys.has(m.key)),
+    };
+  }, [visibleModels]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -66,7 +124,7 @@ export default function ModelCombobox({
         >
           {current ? (
             <span className="flex items-center gap-2 min-w-0">
-              {current.thumbnailUrl && (
+              {current.hasThumbnail && (
                 <ModelThumbnail m={current} sizeClass="w-5 h-5" width={48} />
               )}
               <span className="truncate">{current.label}</span>
@@ -82,14 +140,18 @@ export default function ModelCombobox({
       </PopoverTrigger>
       <PopoverContent className="w-[420px] p-0" sideOffset={6}>
         <Command
-          filter={(itemValue, search) => {
-            // itemValue is lowercased by cmdk. Match substring anywhere.
-            return itemValue.includes(search.toLowerCase()) ? 1 : 0;
-          }}
+          shouldFilter={false}
         >
-          <CommandInput placeholder="Search models…" autoFocus />
+          <CommandInput
+            placeholder="Search models…"
+            autoFocus
+            value={search}
+            onValueChange={setSearch}
+          />
           <CommandList>
-            <CommandEmpty>No models match.</CommandEmpty>
+            <CommandEmpty>
+              {searchEnabled && !searchCatalog ? "Searching..." : "No models match."}
+            </CommandEmpty>
             {featured.length > 0 && (
               <CommandGroup heading="Featured">
                 {featured.map((m) => (
@@ -99,7 +161,9 @@ export default function ModelCombobox({
                     selected={value === m.key}
                     isFreeLocked={isFreePlan && (m.type === "video" || m.credits > freeCreditCap)}
                     onSelect={() => {
-                      onChange(m.key);
+                      rememberPicked(m);
+                      onChange(m);
+                      setSearch("");
                       setOpen(false);
                     }}
                   />
@@ -118,7 +182,9 @@ export default function ModelCombobox({
                     selected={value === m.key}
                     isFreeLocked={isFreePlan && m.credits > freeCreditCap}
                     onSelect={() => {
-                      onChange(m.key);
+                      rememberPicked(m);
+                      onChange(m);
+                      setSearch("");
                       setOpen(false);
                     }}
                   />
@@ -135,7 +201,9 @@ export default function ModelCombobox({
                     selected={value === m.key}
                     isFreeLocked={isFreePlan}
                     onSelect={() => {
-                      onChange(m.key);
+                      rememberPicked(m);
+                      onChange(m);
+                      setSearch("");
                       setOpen(false);
                     }}
                   />
@@ -160,14 +228,9 @@ function ModelRow({
   isFreeLocked: boolean;
   onSelect: () => void;
 }) {
-  // Include description + endpoint-like hints in the search value so typing
-  // "edit", "turbo", "pro", etc. matches the right model.
-  const searchHaystack =
-    `${m.label} ${m.key} ${m.category ?? ""} ${m.description ?? ""}`.toLowerCase();
-
   return (
-    <CommandItem value={searchHaystack} onSelect={onSelect}>
-      {m.thumbnailUrl ? (
+    <CommandItem value={m.key} onSelect={onSelect}>
+      {m.hasThumbnail ? (
         <ModelThumbnail m={m} sizeClass="w-8 h-8" width={72} lazy />
       ) : (
         <ModelPlaceholder m={m} sizeClass="w-8 h-8" />
@@ -177,11 +240,7 @@ function ModelRow({
           {m.isFeatured && <Star size={12} className="text-primary fill-primary/20" />}
           <span className="truncate">{m.label}</span>
         </div>
-        {m.description && (
-          <div className="text-xs text-muted-foreground line-clamp-1">
-            {m.description}
-          </div>
-        )}
+        {m.category && <div className="text-xs text-muted-foreground line-clamp-1">{m.category}</div>}
       </div>
       <div className="text-xs text-muted-foreground shrink-0 tabular-nums">
         {isFreeLocked ? (
@@ -209,27 +268,61 @@ function ModelThumbnail({
   width: number;
   lazy?: boolean;
 }) {
-  const [fallback, setFallback] = useState<"proxy" | "direct" | "placeholder">("proxy");
+  const [failed, setFailed] = useState(false);
+  const [visible, setVisible] = useState(!lazy);
+  const holderRef = useRef<HTMLDivElement | null>(null);
 
-  if (!m.thumbnailUrl || fallback === "placeholder") {
+  // Scroll containers (like the popover list) often defeat the browser's
+  // `loading="lazy"` — it only fires near the document viewport, not within
+  // an inner scrollable element. IntersectionObserver with the popover's
+  // own scroller as the implicit root handles that case.
+  useEffect(() => {
+    if (!lazy || visible) return;
+    const el = holderRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setVisible(true);
+            io.disconnect();
+            return;
+          }
+        }
+      },
+      { rootMargin: "120px 0px", threshold: 0.01 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [lazy, visible]);
+
+  if (!m.hasThumbnail || failed) {
     return <ModelPlaceholder m={m} sizeClass={sizeClass} />;
   }
 
-  const src =
-    fallback === "proxy"
-      ? `/api/models/${encodeURIComponent(m.key)}/thumb?w=${width}`
-      : m.thumbnailUrl;
+  if (!visible) {
+    return (
+      <div
+        ref={holderRef}
+        className={cn(sizeClass, "rounded bg-muted shrink-0")}
+      />
+    );
+  }
 
   return (
     <img
-      src={src}
+      src={modelThumbnailSrc(m.key, width)}
       alt=""
       className={cn(sizeClass, "rounded object-cover shrink-0")}
-      loading={lazy ? "lazy" : undefined}
+      loading="lazy"
       decoding="async"
-      onError={() => setFallback(fallback === "proxy" ? "direct" : "placeholder")}
+      onError={() => setFailed(true)}
     />
   );
+}
+
+function modelThumbnailSrc(key: string, width: number) {
+  return `/api/models/thumb?key=${encodeURIComponent(key)}&w=${width}`;
 }
 
 function ModelPlaceholder({ m, sizeClass }: { m: ModelInfo; sizeClass: string }) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInput } from "../worker/providers/fal";
+import { buildInput, queueResultUrl, queueSubmitUrl } from "../worker/providers/fal";
 
 describe("fal input shaping", () => {
   it("passes through supported generation options", () => {
@@ -47,5 +47,18 @@ describe("fal input shaping", () => {
     assert.deepEqual(input, {
       prompt: "A quiet landscape",
     });
+  });
+});
+
+describe("fal queue URLs", () => {
+  it("builds direct queue submit and result URLs", () => {
+    assert.equal(
+      queueSubmitUrl("fal-ai/flux/schnell", "https://example.com/webhook?gen=1"),
+      "https://queue.fal.run/fal-ai/flux/schnell?fal_webhook=https%3A%2F%2Fexample.com%2Fwebhook%3Fgen%3D1",
+    );
+    assert.equal(
+      queueResultUrl("fal-ai/flux/schnell", "req_123"),
+      "https://queue.fal.run/fal-ai/flux/schnell/requests/req_123",
+    );
   });
 });

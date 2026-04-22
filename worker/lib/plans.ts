@@ -1,0 +1,4 @@
+export const DEFAULT_FREE_GRANT = 5;
+export const FREE_GENERATION_CREDIT_CAP = 10;
+export const ASSISTANT_COST_PER_MESSAGE = 1;
+export const PRO_MONTHLY_CREDITS = 500;

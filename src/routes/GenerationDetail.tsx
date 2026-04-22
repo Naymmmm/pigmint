@@ -1,7 +1,14 @@
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, type Generation } from "@/lib/api";
+import { apiFetch, type Folder, type Generation } from "@/lib/api";
 import { ArrowLeft, Star, Trash2, Download } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export default function GenerationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -15,6 +22,10 @@ export default function GenerationDetail() {
         ? 1500
         : false,
   });
+  const { data: folders } = useQuery<{ items: Folder[] }>({
+    queryKey: ["folders"],
+    queryFn: () => apiFetch("/folders"),
+  });
 
   const bookmark = useMutation({
     mutationFn: () => apiFetch(`/bookmarks/${id}`, { method: "POST" }),
@@ -25,6 +36,22 @@ export default function GenerationDetail() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["generations"] });
       window.location.href = "/gallery";
+    },
+  });
+  const move = useMutation({
+    mutationFn: (value: string) =>
+      apiFetch(`/generations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ folderId: value === "none" ? null : value }),
+      }),
+    onSuccess: (_data, value) => {
+      qc.setQueryData<Generation>(["generation", id], (current) =>
+        current
+          ? { ...current, folder_id: value === "none" ? null : value }
+          : current,
+      );
+      qc.invalidateQueries({ queryKey: ["generation", id] });
+      qc.invalidateQueries({ queryKey: ["generations"] });
     },
   });
 
@@ -60,6 +87,28 @@ export default function GenerationDetail() {
               <span>{gen.width}×{gen.height}</span>
             </>
           )}
+        </div>
+        <div className="flex max-w-xs flex-col gap-1">
+          <span className="text-[11px] font-medium leading-none text-muted-foreground">
+            Folder
+          </span>
+          <Select
+            value={gen.folder_id ?? "none"}
+            onValueChange={(value) => move.mutate(value)}
+            disabled={move.isPending}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Folder" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No folder</SelectItem>
+              {(folders?.items ?? []).map((folder) => (
+                <SelectItem key={folder.id} value={folder.id}>
+                  {folder.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="flex gap-2">
           <button

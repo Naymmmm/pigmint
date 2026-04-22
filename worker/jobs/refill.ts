@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { id, now } from "../lib/ids";
-import { PRO_MONTHLY_CREDITS } from "../lib/pricing";
+import { PRO_MONTHLY_CREDITS } from "../lib/plans";
 
 // Daily cron: top up pro users whose last refill was > 30 days ago.
 export async function runCreditRefill(env: Env) {
