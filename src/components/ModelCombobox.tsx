@@ -67,12 +67,7 @@ export default function ModelCombobox({
           {current ? (
             <span className="flex items-center gap-2 min-w-0">
               {current.thumbnailUrl && (
-                <img
-                  src={`/api/models/${encodeURIComponent(current.key)}/thumb?w=48`}
-                  alt=""
-                  className="w-5 h-5 rounded object-cover shrink-0"
-                  decoding="async"
-                />
+                <ModelThumbnail m={current} sizeClass="w-5 h-5" width={48} />
               )}
               <span className="truncate">{current.label}</span>
               <span className="text-xs text-muted-foreground shrink-0 ml-auto">
@@ -173,21 +168,9 @@ function ModelRow({
   return (
     <CommandItem value={searchHaystack} onSelect={onSelect}>
       {m.thumbnailUrl ? (
-        <img
-          src={`/api/models/${encodeURIComponent(m.key)}/thumb?w=72`}
-          alt=""
-          className="w-8 h-8 rounded object-cover shrink-0"
-          loading="lazy"
-          decoding="async"
-        />
+        <ModelThumbnail m={m} sizeClass="w-8 h-8" width={72} lazy />
       ) : (
-        <div className="w-8 h-8 rounded bg-muted flex items-center justify-center shrink-0">
-          {m.type === "image" ? (
-            <ImageIcon size={14} className="text-muted-foreground" />
-          ) : (
-            <Video size={14} className="text-muted-foreground" />
-          )}
-        </div>
+        <ModelPlaceholder m={m} sizeClass="w-8 h-8" />
       )}
       <div className="flex-1 min-w-0">
         <div className="font-medium text-sm truncate flex items-center gap-1.5">
@@ -212,5 +195,51 @@ function ModelRow({
       </div>
       {selected && <Check className="h-4 w-4 shrink-0 text-primary" />}
     </CommandItem>
+  );
+}
+
+function ModelThumbnail({
+  m,
+  sizeClass,
+  width,
+  lazy = false,
+}: {
+  m: ModelInfo;
+  sizeClass: string;
+  width: number;
+  lazy?: boolean;
+}) {
+  const [fallback, setFallback] = useState<"proxy" | "direct" | "placeholder">("proxy");
+
+  if (!m.thumbnailUrl || fallback === "placeholder") {
+    return <ModelPlaceholder m={m} sizeClass={sizeClass} />;
+  }
+
+  const src =
+    fallback === "proxy"
+      ? `/api/models/${encodeURIComponent(m.key)}/thumb?w=${width}`
+      : m.thumbnailUrl;
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className={cn(sizeClass, "rounded object-cover shrink-0")}
+      loading={lazy ? "lazy" : undefined}
+      decoding="async"
+      onError={() => setFallback(fallback === "proxy" ? "direct" : "placeholder")}
+    />
+  );
+}
+
+function ModelPlaceholder({ m, sizeClass }: { m: ModelInfo; sizeClass: string }) {
+  return (
+    <div className={cn(sizeClass, "rounded bg-muted flex items-center justify-center shrink-0")}>
+      {m.type === "image" ? (
+        <ImageIcon size={14} className="text-muted-foreground" />
+      ) : (
+        <Video size={14} className="text-muted-foreground" />
+      )}
+    </div>
   );
 }

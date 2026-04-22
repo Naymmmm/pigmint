@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AppShell from "@/components/AppShell";
 import { useMe } from "@/lib/api";
@@ -27,5 +27,11 @@ function ProtectedContent({ children }: { children: ReactNode }) {
     return null;
   }
 
-  return <AppShell>{children}</AppShell>;
+  return (
+    <AppShell>
+      <Suspense fallback={<div className="p-8 text-muted-foreground">Loading...</div>}>
+        {children}
+      </Suspense>
+    </AppShell>
+  );
 }

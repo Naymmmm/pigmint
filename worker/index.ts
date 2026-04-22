@@ -34,6 +34,9 @@ api.route("/webhooks/stripe", stripeWebhook);
 // Public auth routes.
 api.route("/auth", authRoutes);
 
+// Public model catalog. It intentionally excludes provider cost and secrets.
+api.route("/models", modelsRoutes);
+
 // Signed reference images need to be reachable by model providers.
 api.get("/generations/refs/:key{.+}", serveSignedGenerationRef);
 
@@ -41,7 +44,6 @@ api.get("/generations/refs/:key{.+}", serveSignedGenerationRef);
 const authed = new Hono<AppEnv>();
 authed.use("*", requireUser);
 authed.route("/generations", generationsRoutes);
-authed.route("/models", modelsRoutes);
 authed.route("/folders", foldersRoutes);
 authed.route("/bookmarks", bookmarksRoutes);
 authed.route("/assistant", assistantRoutes);

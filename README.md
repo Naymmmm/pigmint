@@ -98,6 +98,12 @@ pnpm sync:catalog
 
 The sync writes `worker/lib/catalog.generated.json` and uses `scripts/.fal-catalog-cache.json` as a local ignored cache.
 
+Production builds do not emit source maps by default. Generate them only when needed:
+
+```bash
+VITE_SOURCEMAP=true pnpm build
+```
+
 ## Verification
 
 ```bash
