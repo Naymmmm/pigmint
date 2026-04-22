@@ -152,23 +152,54 @@ export async function saveToR2(
   return { key: r2Key, contentType, size: buf.byteLength };
 }
 
+// Canonical "W:H" → flux-family image_size preset.
+const IMAGE_SIZE_PRESETS: Record<string, string> = {
+  "1:1": "square_hd",
+  "16:9": "landscape_16_9",
+  "9:16": "portrait_16_9",
+  "4:3": "landscape_4_3",
+  "3:4": "portrait_4_3",
+  "21:9": "landscape_16_9", // fal's flux presets don't ship a 21:9 — closest match
+};
+
 /** Shape the per-model input from our canonical generate params. */
 export function buildInput(opts: {
   prompt: string;
   negativePrompt?: string | null;
   aspectRatio: string;
+  aspectParam: "aspect_ratio" | "image_size" | "none";
   refImageUrls: string[];
+  refImageParam?: string | null;
+  refImageParamKind?: "single" | "array" | null;
+  negativePromptParam?: string | null;
+  supportsSeed?: boolean;
+  numImages?: number | null;
+  supportsNumImages?: boolean;
+  resolution?: string | null;
+  supportsResolution?: boolean;
+  quality?: string | null;
+  supportsQuality?: boolean;
   seed?: number | null;
 }): Record<string, unknown> {
-  const input: Record<string, unknown> = {
-    prompt: opts.prompt,
-    aspect_ratio: opts.aspectRatio,
-  };
-  if (opts.negativePrompt) input.negative_prompt = opts.negativePrompt;
-  if (opts.seed != null) input.seed = opts.seed;
-  if (opts.refImageUrls.length > 0) {
-    input.image_url = opts.refImageUrls[0];
-    input.image_urls = opts.refImageUrls;
+  const input: Record<string, unknown> = { prompt: opts.prompt };
+
+  if (opts.aspectParam === "image_size") {
+    input.image_size = IMAGE_SIZE_PRESETS[opts.aspectRatio] ?? "square_hd";
+  } else if (opts.aspectParam === "aspect_ratio") {
+    input.aspect_ratio = opts.aspectRatio;
+  }
+
+  const negativePromptParam = opts.negativePromptParam ?? "negative_prompt";
+  if (opts.negativePrompt && negativePromptParam) {
+    input[negativePromptParam] = opts.negativePrompt;
+  }
+  if (opts.seed != null && opts.supportsSeed !== false) input.seed = opts.seed;
+  if (opts.numImages != null && opts.supportsNumImages) input.num_images = opts.numImages;
+  if (opts.resolution && opts.supportsResolution) input.resolution = opts.resolution;
+  if (opts.quality && opts.supportsQuality) input.quality = opts.quality;
+  if (opts.refImageUrls.length > 0 && opts.refImageParam) {
+    input[opts.refImageParam] =
+      opts.refImageParamKind === "array" ? opts.refImageUrls : opts.refImageUrls[0];
   }
   return input;
 }

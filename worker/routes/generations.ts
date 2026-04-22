@@ -1,13 +1,42 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { z } from "zod";
 import type { Env, AppVariables } from "../env";
 import { id, now } from "../lib/ids";
-import { MODELS, creditCost } from "../lib/pricing";
+import {
+  FREE_GENERATION_CREDIT_CAP,
+  MODELS,
+  generationCreditCost,
+  isWithinFreeGenerationCap,
+} from "../lib/pricing";
 import { moderate } from "../lib/moderation";
+import { createSignedRefUrl, verifySignedRefUrl } from "../lib/ref-images";
 import * as fal from "../providers/fal";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 export const generationsRoutes = new Hono<AppEnv>();
+
+export async function serveSignedGenerationRef(c: Context<AppEnv>): Promise<Response> {
+  const rawKey = c.req.param("key");
+  if (!rawKey) return c.json({ error: "bad_request" }, 400);
+  const key = decodeURIComponent(rawKey);
+  const ok = await verifySignedRefUrl(
+    c.env,
+    key,
+    c.req.query("exp"),
+    c.req.query("sig"),
+  );
+  if (!ok) return c.json({ error: "forbidden" }, 403);
+
+  const obj = await c.env.BUCKET.get(key);
+  if (!obj) return c.json({ error: "not_found" }, 404);
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": obj.httpMetadata?.contentType ?? "application/octet-stream",
+      "Cache-Control": "private, max-age=86400",
+    },
+  });
+}
 
 const createSchema = z.object({
   model: z.string(),
@@ -17,6 +46,9 @@ const createSchema = z.object({
   refImageUrls: z.array(z.string().url()).max(4).optional(),
   folderId: z.string().nullable().optional(),
   seed: z.number().int().optional(),
+  numImages: z.number().int().min(1).max(8).optional(),
+  resolution: z.string().optional(),
+  quality: z.string().optional(),
 });
 
 generationsRoutes.post("/", async (c) => {
@@ -26,8 +58,29 @@ generationsRoutes.post("/", async (c) => {
 
   const model = MODELS[body.data.model];
   if (!model) return c.json({ error: "unknown_model" }, 400);
-  if (!model.maxAspects.includes(body.data.aspectRatio)) {
+  if (!model.aspects.includes(body.data.aspectRatio)) {
     return c.json({ error: "unsupported_aspect" }, 400);
+  }
+  if (model.requiresRefImage && (body.data.refImageUrls?.length ?? 0) === 0) {
+    return c.json({ error: "reference_image_required" }, 400);
+  }
+  const numImages = body.data.numImages ?? model.defaultNumImages ?? 1;
+  if (
+    body.data.numImages != null &&
+    !model.numImagesOptions.includes(body.data.numImages)
+  ) {
+    return c.json({ error: "unsupported_num_images" }, 400);
+  }
+  const resolution = body.data.resolution ?? model.defaultResolution ?? null;
+  if (
+    body.data.resolution &&
+    !model.resolutionOptions.includes(body.data.resolution)
+  ) {
+    return c.json({ error: "unsupported_resolution" }, 400);
+  }
+  const quality = body.data.quality ?? model.defaultQuality ?? null;
+  if (body.data.quality && !model.qualityOptions.includes(body.data.quality)) {
+    return c.json({ error: "unsupported_quality" }, 400);
   }
 
   // Moderation gate (prompt + any ref images).
@@ -57,9 +110,19 @@ generationsRoutes.post("/", async (c) => {
     .first<{ plan: string; free_remaining: number; credits: number }>();
   if (!user) return c.json({ error: "user_missing" }, 500);
 
-  const cost = creditCost(body.data.model);
+  const cost = generationCreditCost(body.data.model, model.type === "image" ? numImages : 1);
+  if (user.plan === "free" && !isWithinFreeGenerationCap(cost)) {
+    return c.json(
+      {
+        error: "free_generation_credit_cap",
+        cap: FREE_GENERATION_CREDIT_CAP,
+        required: cost,
+      },
+      402,
+    );
+  }
   const useFree =
-    model.type === "image" && user.plan === "free" && user.free_remaining > 0;
+    model.type === "image" && user.plan === "free" && user.free_remaining >= numImages;
 
   if (!useFree) {
     if (model.type === "video" && user.plan === "free") {
@@ -76,9 +139,9 @@ generationsRoutes.post("/", async (c) => {
   // Debit atomically.
   if (useFree) {
     await c.env.DB.prepare(
-      "UPDATE users SET free_remaining = free_remaining - 1 WHERE id = ? AND free_remaining > 0",
+        "UPDATE users SET free_remaining = free_remaining - ? WHERE id = ? AND free_remaining >= ?",
     )
-      .bind(userId)
+      .bind(numImages, userId, numImages)
       .run();
   } else {
     await c.env.DB.batch([
@@ -98,14 +161,25 @@ generationsRoutes.post("/", async (c) => {
     prompt: body.data.prompt,
     negativePrompt: body.data.negativePrompt,
     aspectRatio: body.data.aspectRatio,
+    aspectParam: model.aspectParam,
     refImageUrls: body.data.refImageUrls ?? [],
+    refImageParam: model.refImageParam,
+    refImageParamKind: model.refImageParamKind,
+    negativePromptParam: model.negativePromptParam,
+    supportsSeed: model.supportsSeed,
+    numImages,
+    supportsNumImages: model.numImagesOptions.length > 0,
+    resolution,
+    supportsResolution: model.resolutionOptions.length > 0,
+    quality,
+    supportsQuality: model.qualityOptions.length > 0,
     seed: body.data.seed,
   });
 
   let submission: fal.FalSubmitResult;
   try {
     submission = await fal.submit(c.env, {
-      modelEndpoint: model.id,
+      modelEndpoint: model.endpoint,
       input: falInput,
       webhookUrl,
     });
@@ -113,9 +187,9 @@ generationsRoutes.post("/", async (c) => {
     // Refund.
     if (useFree) {
       await c.env.DB.prepare(
-        "UPDATE users SET free_remaining = free_remaining + 1 WHERE id = ?",
+        "UPDATE users SET free_remaining = free_remaining + ? WHERE id = ?",
       )
-        .bind(userId)
+        .bind(numImages, userId)
         .run();
     } else {
       await c.env.DB.batch([
@@ -203,6 +277,60 @@ generationsRoutes.get("/:id", async (c) => {
   return c.json(row);
 });
 
+// Gallery thumbnails via Cloudflare Image Transformations.
+// Fetches our own /asset endpoint with cf.image options; the edge resizes and
+// transcodes to WebP/AVIF based on the browser's Accept header. Image
+// Transformations must be enabled on the zone (cf.image is silently ignored
+// otherwise, in which case we pass through the original).
+generationsRoutes.get("/:id/thumb", async (c) => {
+  const userId = c.get("userId");
+  const genId = c.req.param("id");
+  const row = await c.env.DB.prepare(
+    "SELECT r2_key, type FROM generations WHERE id = ? AND user_id = ?",
+  )
+    .bind(genId, userId)
+    .first<{ r2_key: string | null; type: string }>();
+  if (!row?.r2_key) return c.json({ error: "not_ready" }, 404);
+  if (row.type !== "image") {
+    // Videos: no transformation, just redirect to the original asset.
+    return c.redirect(`/api/generations/${genId}/asset`);
+  }
+
+  const width = Math.min(
+    Math.max(Number(c.req.query("w") ?? "400"), 80),
+    1600,
+  );
+  const assetUrl = `${c.env.APP_URL}/api/generations/${genId}/asset`;
+
+  const upstream = await fetch(assetUrl, {
+    headers: {
+      cookie: c.req.header("cookie") ?? "",
+      accept: c.req.header("accept") ?? "image/avif,image/webp,image/*",
+    },
+    cf: {
+      image: {
+        width,
+        format: "auto",
+        quality: 82,
+        fit: "scale-down",
+        "origin-auth": "share-publicly",
+      },
+    },
+  } as unknown as RequestInit);
+
+  if (!upstream.ok) {
+    return c.redirect(`/api/generations/${genId}/asset`, 307);
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "Content-Type": upstream.headers.get("Content-Type") ?? "image/webp",
+      "Cache-Control": "private, max-age=86400",
+    },
+  });
+});
+
 generationsRoutes.get("/:id/asset", async (c) => {
   const userId = c.get("userId");
   const row = await c.env.DB.prepare(
@@ -260,7 +388,7 @@ generationsRoutes.post("/uploads", async (c) => {
   }
   const key = `refs/${userId}/${id("ref")}`;
   await c.env.BUCKET.put(key, c.req.raw.body, { httpMetadata: { contentType } });
-  return c.json({ key, url: `${c.env.APP_URL}/api/generations/refs/${encodeURIComponent(key)}` });
+  return c.json({ key, url: await createSignedRefUrl(c.env, key) });
 });
 
 generationsRoutes.get("/refs/:key{.+}", async (c) => {

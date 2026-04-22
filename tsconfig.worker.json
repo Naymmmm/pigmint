@@ -13,7 +13,10 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "baseUrl": ".",
-    "paths": { "@worker/*": ["worker/*"] }
+    "paths": {
+      "@worker/*": ["worker/*"],
+      "@shared/*": ["shared/*"]
+    }
   },
-  "include": ["worker"]
+  "include": ["worker", "shared"]
 }

@@ -1,64 +1,107 @@
+import catalog from "./catalog.generated.json" with { type: "json" };
+
 export type GenType = "image" | "video";
 
+export type AspectParam = "aspect_ratio" | "image_size" | "none";
+export type RefImageParamKind = "single" | "array";
+
 export interface ModelSpec {
-  id: string;            // fal endpoint id, e.g. "fal-ai/flux/schnell"
+  key: string;
+  endpoint: string;       // fal endpoint id
   label: string;
+  description: string | null;
+  category: string | null;
+  thumbnailUrl: string | null;
   type: GenType;
-  credits: number;       // base credit cost per generation
-  maxAspects: string[];  // allowed aspect ratios
+  credits: number;
+  falCostUsd: number;
+  aspects: string[];
   defaultAspect: string;
   supportsRefImages: boolean;
+  requiresRefImage: boolean;
+  aspectParam: AspectParam;
+  refImageParam: string | null;
+  refImageParamKind: RefImageParamKind | null;
+  negativePromptParam: string | null;
+  supportsSeed: boolean;
+  numImagesOptions: number[];
+  defaultNumImages: number | null;
+  resolutionOptions: string[];
+  defaultResolution: string | null;
+  qualityOptions: string[];
+  defaultQuality: string | null;
+  isFeatured: boolean;
+  featuredRank: number | null;
 }
 
-export const MODELS: Record<string, ModelSpec> = {
-  "flux-schnell": {
-    id: "fal-ai/flux/schnell",
-    label: "Flux Schnell (fast)",
-    type: "image",
-    credits: 1,
-    maxAspects: ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    defaultAspect: "1:1",
-    supportsRefImages: false,
-  },
-  "flux-dev": {
-    id: "fal-ai/flux/dev",
-    label: "Flux Dev (quality)",
-    type: "image",
-    credits: 3,
-    maxAspects: ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    defaultAspect: "1:1",
-    supportsRefImages: true,
-  },
-  "flux-pro": {
-    id: "fal-ai/flux-pro/v1.1",
-    label: "Flux Pro",
-    type: "image",
-    credits: 5,
-    maxAspects: ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"],
-    defaultAspect: "1:1",
-    supportsRefImages: true,
-  },
-  "kling-video": {
-    id: "fal-ai/kling-video/v1/standard/text-to-video",
-    label: "Kling Video (5s)",
-    type: "video",
-    credits: 25,
-    maxAspects: ["16:9", "9:16", "1:1"],
-    defaultAspect: "16:9",
-    supportsRefImages: true,
-  },
-  "veo-video": {
-    id: "fal-ai/veo3",
-    label: "Veo 3 (premium)",
-    type: "video",
-    credits: 60,
-    maxAspects: ["16:9", "9:16"],
-    defaultAspect: "16:9",
-    supportsRefImages: false,
-  },
-};
+export const USD_PER_CREDIT = catalog.usdPerCredit;
 
+const rawModels = catalog.models as Array<{
+  key: string;
+  endpoint: string;
+  displayName: string;
+  description: string | null;
+  category?: string | null;
+  thumbnailUrl: string | null;
+  type: GenType;
+  credits: number;
+  falCostUsd: number;
+  aspects: string[];
+  defaultAspect: string;
+  supportsRefImages: boolean;
+  requiresRefImage?: boolean;
+  aspectParam: AspectParam;
+  refImageParam?: string | null;
+  refImageParamKind?: RefImageParamKind | null;
+  negativePromptParam?: string | null;
+  supportsSeed?: boolean;
+  numImagesOptions?: number[];
+  defaultNumImages?: number | null;
+  resolutionOptions?: string[];
+  defaultResolution?: string | null;
+  qualityOptions?: string[];
+  defaultQuality?: string | null;
+  isFeatured?: boolean;
+  featuredRank?: number | null;
+}>;
+
+export const MODELS: Record<string, ModelSpec> = Object.fromEntries(
+  rawModels.map((m) => [
+    m.key,
+    {
+      key: m.key,
+      endpoint: m.endpoint,
+      label: m.displayName,
+      description: m.description,
+      category: m.category ?? null,
+      thumbnailUrl: m.thumbnailUrl,
+      type: m.type,
+      credits: m.credits,
+      falCostUsd: m.falCostUsd,
+      aspects: m.aspects,
+      defaultAspect: m.defaultAspect,
+      supportsRefImages: m.supportsRefImages,
+      requiresRefImage: !!m.requiresRefImage,
+      aspectParam: m.aspectParam,
+      refImageParam: m.refImageParam ?? null,
+      refImageParamKind: m.refImageParamKind ?? null,
+      negativePromptParam: m.negativePromptParam ?? "negative_prompt",
+      supportsSeed: m.supportsSeed ?? true,
+      numImagesOptions: m.numImagesOptions ?? [],
+      defaultNumImages: m.defaultNumImages ?? null,
+      resolutionOptions: m.resolutionOptions ?? [],
+      defaultResolution: m.defaultResolution ?? null,
+      qualityOptions: m.qualityOptions ?? [],
+      defaultQuality: m.defaultQuality ?? null,
+      isFeatured: !!m.isFeatured,
+      featuredRank: m.featuredRank ?? null,
+    },
+  ]),
+);
+
+// Plan + free-tier config.
 export const DEFAULT_FREE_GRANT = 5;
+export const FREE_GENERATION_CREDIT_CAP = 10;
 export const ASSISTANT_COST_PER_MESSAGE = 1;
 export const PRO_MONTHLY_CREDITS = 500;
 
@@ -66,4 +109,25 @@ export function creditCost(modelKey: string): number {
   const m = MODELS[modelKey];
   if (!m) throw new Error(`Unknown model: ${modelKey}`);
   return m.credits;
+}
+
+export function generationCreditCost(modelKey: string, numImages = 1): number {
+  const m = MODELS[modelKey];
+  if (!m) throw new Error(`Unknown model: ${modelKey}`);
+  return m.credits * Math.max(1, numImages);
+}
+
+export function isWithinFreeGenerationCap(requiredCredits: number): boolean {
+  return requiredCredits <= FREE_GENERATION_CREDIT_CAP;
+}
+
+export function userFacingPrice(modelKey: string): number {
+  return creditCost(modelKey) * USD_PER_CREDIT;
+}
+
+export function grossMargin(modelKey: string): number {
+  const m = MODELS[modelKey];
+  if (!m) return 0;
+  const revenue = m.credits * USD_PER_CREDIT;
+  return (revenue - m.falCostUsd) / revenue;
 }

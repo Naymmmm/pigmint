@@ -3,7 +3,8 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { Env, AppVariables } from "./env";
 import { authRoutes } from "./routes/auth";
-import { generationsRoutes } from "./routes/generations";
+import { generationsRoutes, serveSignedGenerationRef } from "./routes/generations";
+import { modelsRoutes } from "./routes/models";
 import { foldersRoutes } from "./routes/folders";
 import { bookmarksRoutes } from "./routes/bookmarks";
 import { assistantRoutes } from "./routes/assistant";
@@ -33,10 +34,14 @@ api.route("/webhooks/stripe", stripeWebhook);
 // Public auth routes.
 api.route("/auth", authRoutes);
 
+// Signed reference images need to be reachable by model providers.
+api.get("/generations/refs/:key{.+}", serveSignedGenerationRef);
+
 // Authed routes.
 const authed = new Hono<AppEnv>();
 authed.use("*", requireUser);
 authed.route("/generations", generationsRoutes);
+authed.route("/models", modelsRoutes);
 authed.route("/folders", foldersRoutes);
 authed.route("/bookmarks", bookmarksRoutes);
 authed.route("/assistant", assistantRoutes);

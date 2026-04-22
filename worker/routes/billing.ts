@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import Stripe from "stripe";
 import type { Env, AppVariables } from "../env";
+import { SUBSCRIPTION_PRICE_IDS, TOPUP_CREDITS } from "../../shared/billing";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 export const billingRoutes = new Hono<AppEnv>();
@@ -29,17 +30,6 @@ const checkoutSchema = z.object({
   kind: z.enum(["subscription", "topup"]),
   priceId: z.string(),
 });
-
-// Allowlist of price IDs we accept, and how many credits each topup grants.
-// Keep in sync with src/lib/billing-config.ts on the client side.
-const SUBSCRIPTION_PRICE_IDS = new Set<string>([
-  "price_REPLACE_SUBSCRIPTION",
-]);
-const TOPUP_CREDITS: Record<string, number> = {
-  price_REPLACE_TOPUP_500: 500,
-  price_REPLACE_TOPUP_1500: 1500,
-  price_REPLACE_TOPUP_5000: 5000,
-};
 
 billingRoutes.post("/checkout", async (c) => {
   const userId = c.get("userId");

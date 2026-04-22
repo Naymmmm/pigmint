@@ -1,0 +1,41 @@
+name = "pigmint"
+main = "worker/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Static SPA (Vite build output) served by the Worker.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# D1 (metadata)
+[[d1_databases]]
+binding = "DB"
+database_name = "pigmint"
+database_id = "CHANGETHIS"
+migrations_dir = "worker/db/migrations"
+
+# R2 (generated assets + ref images)
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "CHANGETHIS"
+
+# KV (sessions + cache)
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "CHANGETHIS"
+
+# Monthly credit refill cron.
+[triggers]
+crons = ["0 2 * * *"]
+
+# Secrets (set via `wrangler secret put`):
+#   FAL_KEY   (fal.ai webhook verification uses JWKS, no shared secret needed)
+#   WORKOS_API_KEY, WORKOS_CLIENT_ID, WORKOS_COOKIE_PASSWORD
+#   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+#   OPENAI_API_KEY
+#   APP_URL (public origin, e.g. https://pigmint.app)
+
+[vars]
+APP_URL = "https://pigmint.you.workers.dev"

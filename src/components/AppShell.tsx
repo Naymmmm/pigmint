@@ -34,7 +34,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto">
+        <div className="mt-auto space-y-3">
+          <div className="flex items-center gap-3 px-3 text-xs text-muted-foreground">
+            <Link to="/terms" className="hover:text-foreground">
+              Terms
+            </Link>
+            <Link to="/privacy" className="hover:text-foreground">
+              Privacy
+            </Link>
+          </div>
           <form method="POST" action="/api/auth/logout">
             <button className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground w-full">
               <LogOut size={16} /> Sign out

@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pnpm typecheck *)"
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm sync:catalog)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pnpm build *)",
+      "WebFetch(domain:fal.ai)",
+      "Bash(pnpm sync:catalog --discover)",
+      "Bash(pnpm wrangler *)"
     ]
   }
 }

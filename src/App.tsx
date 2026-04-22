@@ -4,6 +4,7 @@ import Gallery from "./routes/Gallery";
 import GenerationDetail from "./routes/GenerationDetail";
 import Assistant from "./routes/Assistant";
 import Billing from "./routes/Billing";
+import Legal from "./routes/Legal";
 import AppShell from "./components/AppShell";
 import { useMe } from "./lib/api";
 
@@ -21,6 +22,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Landing />} />
+      <Route path="/terms" element={<Legal slug="terms" />} />
+      <Route path="/privacy" element={<Legal slug="privacy" />} />
       <Route path="/gallery" element={<Protected><Gallery /></Protected>} />
       <Route path="/generation/:id" element={<Protected><GenerationDetail /></Protected>} />
       <Route path="/assistant" element={<Protected><Assistant /></Protected>} />
