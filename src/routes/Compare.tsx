@@ -191,23 +191,21 @@ function NewComparisonDialog({
             <label className="text-xs font-medium">Prompt</label>
             <Input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="A cyberpunk fox at dusk…" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Model 1</label>
-              <ModelCombobox
-                models={imageModels.filter((m) => m.key !== slotB)}
-                value={slotA}
-                onChange={(m) => setSlotA(m.key)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Model 2</label>
-              <ModelCombobox
-                models={imageModels.filter((m) => m.key !== slotA)}
-                value={slotB}
-                onChange={(m) => setSlotB(m.key)}
-              />
-            </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Model 1</label>
+            <ModelCombobox
+              models={imageModels.filter((m) => m.key !== slotB)}
+              value={slotA}
+              onChange={(m) => setSlotA(m.key)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Model 2</label>
+            <ModelCombobox
+              models={imageModels.filter((m) => m.key !== slotA)}
+              value={slotB}
+              onChange={(m) => setSlotB(m.key)}
+            />
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium">Aspect</label>
