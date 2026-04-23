@@ -183,32 +183,32 @@ function NewComparisonDialog({
           comparison. You can regenerate variants per slot afterwards.
         </p>
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium">Name</label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium leading-none">Name</span>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Flux vs GPT Image 2" />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium">Prompt</label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium leading-none">Prompt</span>
             <Input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="A cyberpunk fox at dusk…" />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium">Model 1</label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium leading-none">Model 1</span>
             <ModelCombobox
               models={imageModels.filter((m) => m.key !== slotB)}
               value={slotA}
               onChange={(m) => setSlotA(m.key)}
             />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium">Model 2</label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium leading-none">Model 2</span>
             <ModelCombobox
               models={imageModels.filter((m) => m.key !== slotA)}
               value={slotB}
               onChange={(m) => setSlotB(m.key)}
             />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium">Aspect</label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium leading-none">Aspect</span>
             <Select value={aspect} onValueChange={setAspect}>
               <SelectTrigger>
                 <SelectValue />
