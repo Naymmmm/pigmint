@@ -44,6 +44,7 @@ async function buildFullApi(): Promise<Hono<AppEnv>> {
   const { bookmarksRoutes } = await import("./routes/bookmarks");
   const { assistantRoutes } = await import("./routes/assistant");
   const { billingRoutes } = await import("./routes/billing");
+  const { comparisonsRoutes } = await import("./routes/comparisons");
   const { falWebhook } = await import("./routes/webhooks/fal");
   const { stripeWebhook } = await import("./routes/webhooks/stripe");
 
@@ -72,6 +73,7 @@ async function buildFullApi(): Promise<Hono<AppEnv>> {
   api.use("/bookmarks/*", spaCors);
   api.use("/assistant/*", spaCors);
   api.use("/billing/*", spaCors);
+  api.use("/comparisons/*", spaCors);
   api.use("/me", spaCors);
 
   api.route("/auth", authRoutes);
@@ -85,6 +87,7 @@ async function buildFullApi(): Promise<Hono<AppEnv>> {
   authed.route("/bookmarks", bookmarksRoutes);
   authed.route("/assistant", assistantRoutes);
   authed.route("/billing", billingRoutes);
+  authed.route("/comparisons", comparisonsRoutes);
   authed.get("/me", (c) => c.json({ id: c.get("userId"), email: c.get("userEmail") }));
 
   api.route("/", authed);

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { Check, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Generation } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 
 function aspectValue(aspect: string): number {
   const [w, h] = aspect.split(":").map(Number);
@@ -20,7 +22,19 @@ function cssAspect(aspect: string): string {
 // index is deferred (native lazy for images, IntersectionObserver for video).
 const EAGER_COUNT = 6;
 
-export default function BentoGrid({ items }: { items: Generation[] }) {
+export interface BentoGridProps {
+  items: Generation[];
+  selectionMode?: boolean;
+  selectedIds?: ReadonlySet<string>;
+  onToggleSelect?: (id: string) => void;
+}
+
+export default function BentoGrid({
+  items,
+  selectionMode = false,
+  selectedIds,
+  onToggleSelect,
+}: BentoGridProps) {
   return (
     <motion.div
       layout
@@ -30,7 +44,15 @@ export default function BentoGrid({ items }: { items: Generation[] }) {
     >
       <AnimatePresence mode="popLayout">
         {items.map((g, i) => (
-          <BentoItem key={g.id} gen={g} index={i} eager={i < EAGER_COUNT} />
+          <BentoItem
+            key={g.id}
+            gen={g}
+            index={i}
+            eager={i < EAGER_COUNT}
+            selectionMode={selectionMode}
+            selected={selectedIds?.has(g.id) ?? false}
+            onToggleSelect={onToggleSelect}
+          />
         ))}
       </AnimatePresence>
     </motion.div>
@@ -41,14 +63,84 @@ function BentoItem({
   gen,
   index,
   eager,
+  selectionMode,
+  selected,
+  onToggleSelect,
 }: {
   gen: Generation;
   index: number;
   eager: boolean;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const isCompleted = gen.status === "completed" && gen.r2_key;
   const isVideo = gen.type === "video";
   const ratio = cssAspect(gen.aspect_ratio);
+  const isVariant = gen.variant_index > 0 || gen.parent_generation_id != null;
+
+  const tileInner = (
+    <>
+      {isCompleted ? (
+        isVideo ? (
+          <LazyVideo genId={gen.id} />
+        ) : (
+          <img
+            src={`/api/generations/${gen.id}/thumb?w=400`}
+            srcSet={`/api/generations/${gen.id}/thumb?w=300 300w, /api/generations/${gen.id}/thumb?w=600 600w`}
+            sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 20vw"
+            alt={gen.prompt}
+            className="w-full h-full object-cover group-hover:scale-[1.04] transition-transform duration-500"
+            loading={eager ? "eager" : "lazy"}
+            fetchPriority={eager ? "high" : "low"}
+            decoding="async"
+          />
+        )
+      ) : gen.status === "failed" ? (
+        <div className="w-full h-full flex items-center justify-center text-destructive text-sm">
+          Failed
+        </div>
+      ) : (
+        <ShimmerPlaceholder status={gen.status} />
+      )}
+
+      {/* Top-left: variant marker. Completed tiles only to avoid noise on shimmer. */}
+      {isCompleted && isVariant && (
+        <div className="absolute top-2 left-2">
+          <Badge variant="secondary" className="backdrop-blur-sm bg-black/40 text-white border-transparent gap-1">
+            <Layers size={11} />
+            {gen.variant_index > 0 ? `Variant ${gen.variant_index}` : "Variant"}
+          </Badge>
+        </div>
+      )}
+
+      {/* Top-right: selection checkbox in selection mode, video badge otherwise. */}
+      {selectionMode ? (
+        <div
+          className={cn(
+            "absolute top-2 right-2 w-6 h-6 rounded-full border-2 grid place-items-center transition-all",
+            selected
+              ? "bg-primary border-primary text-primary-foreground"
+              : "bg-black/40 border-white/60 backdrop-blur-sm",
+          )}
+        >
+          {selected && <Check size={14} />}
+        </div>
+      ) : (
+        isVideo && (
+          <div className="absolute top-2 right-2">
+            <Badge variant="secondary" className="backdrop-blur-sm bg-black/40 text-white border-transparent text-[10px] uppercase tracking-wider">
+              Video
+            </Badge>
+          </div>
+        )
+      )}
+
+      <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/80 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+        <p className="text-xs text-white line-clamp-2">{gen.prompt}</p>
+      </div>
+    </>
+  );
 
   return (
     <motion.div
@@ -67,44 +159,26 @@ function BentoItem({
       className={cn(
         "mb-3 block break-inside-avoid rounded-xl overflow-hidden bg-card border border-border relative group",
         "shadow-sm hover:shadow-xl hover:shadow-primary/5",
-        "transition-shadow duration-200",
+        "transition-all duration-200",
         aspectValue(gen.aspect_ratio) > 2 && "min-h-[80px]",
+        selectionMode && selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
       )}
     >
-      <Link to={`/generation/${gen.id}`} className="block w-full h-full">
-        {isCompleted ? (
-          isVideo ? (
-            <LazyVideo genId={gen.id} />
-          ) : (
-            <img
-              src={`/api/generations/${gen.id}/thumb?w=400`}
-              srcSet={`/api/generations/${gen.id}/thumb?w=300 300w, /api/generations/${gen.id}/thumb?w=600 600w`}
-              sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 20vw"
-              alt={gen.prompt}
-              className="w-full h-full object-cover group-hover:scale-[1.04] transition-transform duration-500"
-              loading={eager ? "eager" : "lazy"}
-              fetchPriority={eager ? "high" : "low"}
-              decoding="async"
-            />
-          )
-        ) : gen.status === "failed" ? (
-          <div className="w-full h-full flex items-center justify-center text-destructive text-sm">
-            Failed
-          </div>
-        ) : (
-          <ShimmerPlaceholder status={gen.status} />
-        )}
-        <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/80 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-          <p className="text-xs text-white line-clamp-2">{gen.prompt}</p>
-          <div className="flex gap-1.5 mt-1.5">
-            {isVideo && (
-              <span className="text-[10px] uppercase tracking-wider bg-white/10 backdrop-blur-md text-white/80 px-1.5 py-0.5 rounded">
-                Video
-              </span>
-            )}
-          </div>
-        </div>
-      </Link>
+      {selectionMode ? (
+        <button
+          type="button"
+          onClick={() => onToggleSelect?.(gen.id)}
+          className="block w-full h-full text-left"
+          aria-pressed={selected}
+          aria-label={selected ? "Deselect" : "Select"}
+        >
+          {tileInner}
+        </button>
+      ) : (
+        <Link to={`/generation/${gen.id}`} className="block w-full h-full">
+          {tileInner}
+        </Link>
+      )}
     </motion.div>
   );
 }

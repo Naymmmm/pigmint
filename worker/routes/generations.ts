@@ -2,16 +2,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import type { Env, AppVariables } from "../env";
-import { id, now } from "../lib/ids";
-import {
-  FREE_GENERATION_CREDIT_CAP,
-  MODELS,
-  generationCreditCost,
-  isWithinFreeGenerationCap,
-} from "../lib/pricing";
-import { moderate } from "../lib/moderation";
+import { id } from "../lib/ids";
+import { MODELS } from "../lib/pricing";
 import { createSignedRefUrl, verifySignedRefUrl } from "../lib/ref-images";
-import * as fal from "../providers/fal";
+import { runSubmission } from "../lib/submit-generation";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 export const generationsRoutes = new Hono<AppEnv>();
@@ -83,207 +77,136 @@ generationsRoutes.post("/", async (c) => {
     return c.json({ error: "unsupported_quality" }, 400);
   }
 
-  // Moderation gate (prompt + any ref images).
-  const decision = await moderate(c.env, {
+  const outcome = await runSubmission(c.env, {
     userId,
+    folderId: body.data.folderId ?? null,
+    model,
+    modelKey: body.data.model,
     prompt: body.data.prompt,
-    imageUrls: body.data.refImageUrls,
-  });
-  if (!decision.allow) {
-    return c.json(
-      {
-        error: "moderation_blocked",
-        action: decision.action,
-        message: decision.userMessage,
-        categories: decision.categories,
-        isChildSafety: decision.isChildSafety,
-      },
-      decision.httpStatus,
-    );
-  }
-
-  // Quota / credit check.
-  const user = await c.env.DB.prepare(
-    "SELECT plan, free_remaining, credits FROM users WHERE id = ?",
-  )
-    .bind(userId)
-    .first<{ plan: string; free_remaining: number; credits: number }>();
-  if (!user) return c.json({ error: "user_missing" }, 500);
-
-  const cost = generationCreditCost(body.data.model, model.type === "image" ? numImages : 1);
-  if (user.plan === "free" && !isWithinFreeGenerationCap(cost)) {
-    return c.json(
-      {
-        error: "free_generation_credit_cap",
-        cap: FREE_GENERATION_CREDIT_CAP,
-        required: cost,
-      },
-      402,
-    );
-  }
-  const useFree =
-    model.type === "image" && user.plan === "free" && user.free_remaining >= numImages;
-
-  if (!useFree) {
-    if (model.type === "video" && user.plan === "free") {
-      return c.json({ error: "video_requires_paid_plan" }, 402);
-    }
-    if (user.credits < cost) {
-      return c.json({ error: "insufficient_credits", required: cost, balance: user.credits }, 402);
-    }
-  }
-
-  // We submit N independent single-image jobs rather than one batched call.
-  // Rationale: most fal models still bill per output image regardless of
-  // batch param, but batching adds provider-side cost variance and ties the
-  // whole request's fate together. Independent submissions give the user
-  // graceful partial success + simpler refund on failure.
-  const perCallCost = generationCreditCost(body.data.model, 1);
-  const createdAt = now();
-
-  // Debit the total upfront, atomically.
-  if (useFree) {
-    const res = await c.env.DB.prepare(
-      "UPDATE users SET free_remaining = free_remaining - ? WHERE id = ? AND free_remaining >= ?",
-    )
-      .bind(numImages, userId, numImages)
-      .run();
-    if ((res.meta.changes ?? 0) === 0) {
-      return c.json({ error: "insufficient_free_generations" }, 402);
-    }
-  } else {
-    const debit = await c.env.DB.prepare(
-      "UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?",
-    )
-      .bind(cost, userId, cost)
-      .run();
-    if ((debit.meta.changes ?? 0) === 0) {
-      return c.json({ error: "insufficient_credits", required: cost }, 402);
-    }
-    await c.env.DB.prepare(
-      `INSERT INTO credit_ledger (id, user_id, delta, reason, created_at)
-       VALUES (?, ?, ?, 'generation', ?)`,
-    )
-      .bind(id("led"), userId, -cost, createdAt)
-      .run();
-  }
-
-  // Fan out: build one fal input (no num_images), submit N times in parallel,
-  // insert a row per submission. Per-submission failures refund that slot
-  // only; successful ones proceed.
-  const baseFalInput = fal.buildInput({
-    prompt: body.data.prompt,
-    negativePrompt: body.data.negativePrompt,
+    negativePrompt: body.data.negativePrompt ?? null,
     aspectRatio: body.data.aspectRatio,
-    aspectParam: model.aspectParam,
     refImageUrls: body.data.refImageUrls ?? [],
-    refImageParam: model.refImageParam,
-    refImageParamKind: model.refImageParamKind,
-    negativePromptParam: model.negativePromptParam,
-    supportsSeed: model.supportsSeed,
-    numImages: 1,
-    supportsNumImages: false, // force single-image per submission
-    resolution,
-    supportsResolution: model.resolutionOptions.length > 0,
-    quality,
-    supportsQuality: model.qualityOptions.length > 0,
     seed: body.data.seed,
+    numImages,
+    resolution,
+    quality,
   });
-
-  const genIds = Array.from({ length: numImages }, () => id("gen"));
-  const refImageJson = JSON.stringify(body.data.refImageUrls ?? []);
-
-  const results = await Promise.all(
-    genIds.map(async (genId, index) => {
-      // If the user passed a seed, increment it per submission so each
-      // output is distinct. If no seed, fal will randomize anyway.
-      const seed =
-        body.data.seed != null ? body.data.seed + index : undefined;
-      const input = seed != null ? { ...baseFalInput, seed } : baseFalInput;
-      const webhookUrl = `${c.env.APP_URL}/api/webhooks/fal?gen=${genId}`;
-      try {
-        const submission = await fal.submit(c.env, {
-          modelEndpoint: model.endpoint,
-          input,
-          webhookUrl,
-        });
-        await c.env.DB.prepare(
-          `INSERT INTO generations
-             (id, user_id, folder_id, type, status, prompt, negative_prompt, model,
-              aspect_ratio, seed, ref_image_urls, credit_cost, fal_request_id, created_at)
-           VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-          .bind(
-            genId,
-            userId,
-            body.data.folderId ?? null,
-            model.type,
-            body.data.prompt,
-            body.data.negativePrompt ?? null,
-            body.data.model,
-            body.data.aspectRatio,
-            seed ?? null,
-            refImageJson,
-            useFree ? 0 : perCallCost,
-            submission.requestId,
-            createdAt,
-          )
-          .run();
-        return { ok: true as const, id: genId };
-      } catch (e) {
-        return { ok: false as const, id: genId, error: String(e) };
-      }
-    }),
-  );
-
-  const succeeded = results.filter((r) => r.ok) as Array<{ ok: true; id: string }>;
-  const failed = results.filter((r) => !r.ok) as Array<{
-    ok: false;
-    id: string;
-    error: string;
-  }>;
-
-  // Refund the failed slots only.
-  if (failed.length > 0) {
-    if (useFree) {
-      await c.env.DB.prepare(
-        "UPDATE users SET free_remaining = free_remaining + ? WHERE id = ?",
-      )
-        .bind(failed.length, userId)
-        .run();
-    } else {
-      const refundAmount = perCallCost * failed.length;
-      await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(
-          refundAmount,
-          userId,
-        ),
-        c.env.DB.prepare(
-          `INSERT INTO credit_ledger (id, user_id, delta, reason, created_at)
-           VALUES (?, ?, ?, 'refund', ?)`,
-        ).bind(id("led"), userId, refundAmount, now()),
-      ]);
-    }
-  }
-
-  if (succeeded.length === 0) {
-    return c.json(
-      {
-        error: "provider_submit_failed",
-        detail: failed[0]?.error ?? "unknown",
-      },
-      502,
-    );
-  }
-
+  if (!outcome.ok) return c.json(outcome.body, outcome.status as 400 | 402 | 500 | 502);
   return c.json({
-    ids: succeeded.map((s) => s.id),
-    submitted: succeeded.length,
-    failed: failed.length,
-    // Backwards-compat: some callers still read `.id`.
-    id: succeeded[0].id,
+    ids: outcome.ids,
+    submitted: outcome.submitted,
+    failed: outcome.failed,
+    id: outcome.ids[0],
     status: "queued",
   });
+});
+
+// Regenerate: fan out N new variants of an existing generation using the
+// same model + prompt + aspect + refs. Variants link back to the parent
+// chain via parent_generation_id so the UI can show a variant strip.
+const regenerateSchema = z.object({
+  numImages: z.number().int().min(1).max(8).optional(),
+  seed: z.number().int().optional(),
+});
+
+generationsRoutes.post("/:id/regenerate", async (c) => {
+  const userId = c.get("userId");
+  const body = regenerateSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) return c.json({ error: "bad_request" }, 400);
+
+  const parent = await c.env.DB.prepare(
+    `SELECT id, parent_generation_id, model, prompt, negative_prompt, aspect_ratio,
+            ref_image_urls, folder_id, variant_index
+     FROM generations WHERE id = ? AND user_id = ?`,
+  )
+    .bind(c.req.param("id"), userId)
+    .first<{
+      id: string;
+      parent_generation_id: string | null;
+      model: string;
+      prompt: string;
+      negative_prompt: string | null;
+      aspect_ratio: string;
+      ref_image_urls: string | null;
+      folder_id: string | null;
+      variant_index: number;
+    }>();
+  if (!parent) return c.json({ error: "not_found" }, 404);
+
+  const model = MODELS[parent.model];
+  if (!model) return c.json({ error: "unknown_model" }, 400);
+
+  // Keep the lineage root as the first-ever generation in the chain so
+  // siblings share a single parent_generation_id key.
+  const rootId = parent.parent_generation_id ?? parent.id;
+  const numImages = body.data.numImages ?? 1;
+  if (!model.numImagesOptions.includes(numImages) && numImages !== 1) {
+    return c.json({ error: "unsupported_num_images" }, 400);
+  }
+  const refs = parent.ref_image_urls
+    ? (JSON.parse(parent.ref_image_urls) as string[])
+    : [];
+
+  // Find the next free variant_index in this lineage.
+  const maxRow = await c.env.DB.prepare(
+    `SELECT COALESCE(MAX(variant_index), -1) AS mx
+     FROM generations WHERE user_id = ? AND (id = ? OR parent_generation_id = ?)`,
+  )
+    .bind(userId, rootId, rootId)
+    .first<{ mx: number }>();
+  const nextIndex = (maxRow?.mx ?? -1) + 1;
+
+  const outcome = await runSubmission(c.env, {
+    userId,
+    folderId: parent.folder_id,
+    model,
+    modelKey: parent.model,
+    prompt: parent.prompt,
+    negativePrompt: parent.negative_prompt,
+    aspectRatio: parent.aspect_ratio,
+    refImageUrls: refs,
+    seed: body.data.seed,
+    numImages,
+    resolution: model.defaultResolution,
+    quality: model.defaultQuality,
+    parentGenerationId: rootId,
+    variantIndexStart: nextIndex,
+    skipModeration: true, // prompt already passed moderation at original submit
+  });
+  if (!outcome.ok) return c.json(outcome.body, outcome.status as 400 | 402 | 500 | 502);
+  return c.json({
+    ids: outcome.ids,
+    submitted: outcome.submitted,
+    failed: outcome.failed,
+    id: outcome.ids[0],
+    parentGenerationId: rootId,
+    status: "queued",
+  });
+});
+
+// Variant strip: return every generation in the same lineage (the root + its
+// children), ordered by variant_index. Used by the detail + compare views.
+generationsRoutes.get("/:id/variants", async (c) => {
+  const userId = c.get("userId");
+  const genId = c.req.param("id");
+  const self = await c.env.DB.prepare(
+    "SELECT id, parent_generation_id FROM generations WHERE id = ? AND user_id = ?",
+  )
+    .bind(genId, userId)
+    .first<{ id: string; parent_generation_id: string | null }>();
+  if (!self) return c.json({ error: "not_found" }, 404);
+  const rootId = self.parent_generation_id ?? self.id;
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, type, status, prompt, model, aspect_ratio, r2_key, thumb_r2_key,
+            width, height, duration_s, folder_id, parent_generation_id,
+            variant_index, created_at, completed_at
+     FROM generations
+     WHERE user_id = ? AND (id = ? OR parent_generation_id = ?)
+     ORDER BY variant_index ASC`,
+  )
+    .bind(userId, rootId, rootId)
+    .all();
+  return c.json({ rootId, items: results });
 });
 
 const listSchema = z.object({
@@ -312,7 +235,8 @@ generationsRoutes.get("/", async (c) => {
   const sql = `
     SELECT g.id, g.type, g.status, g.prompt, g.model, g.aspect_ratio,
            g.r2_key, g.thumb_r2_key, g.width, g.height, g.duration_s,
-           g.folder_id, g.created_at, g.completed_at
+           g.folder_id, g.parent_generation_id, g.variant_index,
+           g.created_at, g.completed_at
     FROM generations g ${join}
     WHERE ${where.join(" AND ")}
     ORDER BY g.created_at DESC

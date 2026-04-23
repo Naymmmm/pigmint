@@ -57,6 +57,8 @@ export interface Generation {
   height: number | null;
   duration_s: number | null;
   folder_id: string | null;
+  parent_generation_id: string | null;
+  variant_index: number;
   created_at: number;
   completed_at: number | null;
 }
@@ -66,4 +68,27 @@ export interface Folder {
   name: string;
   parent_id: string | null;
   created_at: number;
+}
+
+export interface ComparisonSummary {
+  id: string;
+  name: string;
+  prompt: string | null;
+  created_at: number;
+}
+
+export interface ComparisonSlot {
+  id: string;
+  index: number;
+  label: string;
+  model: string | null;
+  generations: Generation[];
+}
+
+export interface ComparisonDetail {
+  id: string;
+  name: string;
+  prompt: string | null;
+  created_at: number;
+  slots: ComparisonSlot[];
 }
